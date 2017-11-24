@@ -1,14 +1,9 @@
-﻿using Discord;
-using Discord.Commands;
-using Discord.Rest;
+﻿using Discord.Rest;
 using Discord.WebSocket;
-using NadekoBot.Common.Attributes;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace NadekoBot.Core.Services
@@ -38,6 +33,7 @@ namespace NadekoBot.Core.Services
         {
             _client = client;
             _client.MessageReceived += CreateChannel;
+            _client.MessageReceived += RemoveChannel;
             _guilds = _client.Guilds;
             foreach (SocketGuildChannel sgc in client.Guilds.ElementAt(0).Channels)
             {
@@ -45,7 +41,6 @@ namespace NadekoBot.Core.Services
                 {
                     continue;
                 }
-
                 channels.Add(sgc.Id, new ChannelStats(sgc.CreatedAt, 0));
             }
 
