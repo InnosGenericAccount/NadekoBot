@@ -1,119 +1,121 @@
-﻿using Discord.Rest;
+﻿using Discord;
+using Discord.Rest;
 using Discord.WebSocket;
+using NadekoBot.Core.Services.Database.Models;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace NadekoBot.Core.Services
 {
     class ChannelService : INService
     {
+        public readonly ConcurrentDictionary<ulong, ChannelSettings> GuildConfigsCache;
         private readonly DiscordSocketClient _client;
-        private Dictionary<ulong, ChannelStats> channels = new Dictionary<ulong, ChannelStats>();
         private IReadOnlyCollection<SocketGuild> _guilds;
 
+        const bool Enabled = true;   //TODO pull these out into properties loaded on runtime
         const int maxNumberOfMessages = 10;
-        const int AllotedTimeBeforeCountReset = 10; //in minutes
-        const int AllotedTimeBeforeChannelRemoval = 10; //in minutes
-
-        class ChannelStats
-        {
-            private DateTimeOffset time = new DateTimeOffset();
-            private int count = 0;
-
-            public ChannelStats(DateTimeOffset time, int count)
-            {
-                this.Time = time;
-                this.Count = count;
-            }
-
-            public DateTimeOffset Time { get => time; set => time = value; }
-            public int Count { get => count; set => count = value; }
-        }
+        const int Delay = 1; //in minutes
+        const int removalFactor = 5; // Delat * removalFactor
+        const IRole role =null;
+  
 
         public ChannelService(DiscordSocketClient client, NadekoBot bot)
         {
             _client = client;
-            _client.MessageReceived += CreateChannel;
-            _client.MessageReceived += RemoveChannel;
             _guilds = _client.Guilds;
-            foreach (SocketGuildChannel sgc in client.Guilds.ElementAt(0).Channels)
+
+            /*
+            GuildConfigsCache = new ConcurrentDictionary<ulong, ChannelSettings>(
+            bot.AllGuildConfigs
+                    .ToDictionary(g => g.GuildId, ChannelSettings.Create));
+                    */
+            if (Enabled)
             {
-                if (!(sgc is SocketTextChannel))
-                {
-                    continue;
-                }
-                channels.Add(sgc.Id, new ChannelStats(sgc.CreatedAt, 0));
-            }
-
-        }
-
-        private Task CreateChannel(SocketMessage message)
-        {
-            String name = GetChannel(message.Channel.Name);
-            ChannelStats channel = channels.GetValueOrDefault(message.Channel.Id);
-            channel.Count++;
-            channel.Time = message.CreatedAt;
-            int nextNumber = getNextNumber(message.Channel.Name);
-
-
-            var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, AllotedTimeBeforeCountReset, 0)).LocalDateTime;
-            if (channel.Count <= maxNumberOfMessages &&channel.Time < tenMinAgo)
-            {
-                //Reset count
-                channel.Count = 0;
-                channel.Time = DateTimeOffset.Now;
+                Start(new CancellationToken());
             }
             
-
-
-            if (channel.Count > maxNumberOfMessages)
-            {
-                //To many messages within the alloted time
-                var _ = Task.Run(async () =>
-                {
-                    RestTextChannel newc = await _client.Guilds.ElementAt(0).CreateTextChannelAsync(name + nextNumber).ConfigureAwait(false);
-                    channels.Add(newc.Id, new ChannelStats(message.CreatedAt, 0));
-                    await newc.SendMessageAsync("This channel was created due to strain on channel "+ message.Channel.Name +". Please continue your conversation here instead. Praise Aqua!");
-                    await message.Channel.SendMessageAsync("Due to strain on this channel, we have created a new channel: " + newc.Name + ". Please spread the conversations over multiple channels");
-                });
-                channel.Count = 0;
-            }
-
-            return Task.CompletedTask;
         }
 
-        private Task RemoveChannel(SocketMessage message)
+
+        private async Task Start(CancellationToken token = default(CancellationToken))
+        {
+            while (!token.IsCancellationRequested)
+            {
+                foreach (SocketGuild guild in _guilds)
+                {
+                    foreach (SocketTextChannel channel in guild.TextChannels)
+                    {
+                        await this.CreateChannel(channel);
+                        await this.RemoveChannel(channel);
+                    }
+                }
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(Delay), token);
+                }
+                catch (TaskCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+
+        private Task CreateChannel(SocketTextChannel s)
         {
             var _ = Task.Run(async () =>
             {
-                int number = 1;
-                ulong key = 0;
-                foreach (SocketTextChannel stc in _guilds.ElementAt(0).TextChannels)
+                var role = s.Guild.Roles.FirstOrDefault(x => x.Name == "Peon");
+                int nextNumber = getNextNumber(s);
+                var messages = await s.GetMessagesAsync(maxNumberOfMessages).Flatten();
+                var oldestMessage = messages.Last().CreatedAt;
+
+                var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, Delay, 0)).LocalDateTime;
+                if (oldestMessage > tenMinAgo && messages.Count()==maxNumberOfMessages)
                 {
-                    var anHourAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, AllotedTimeBeforeChannelRemoval, 0)).LocalDateTime;
-                    if (channels.GetValueOrDefault(stc.Id).Count == 0 && channels.GetValueOrDefault(stc.Id).Time < anHourAgo)
-                    {
-                        //Channel hasn't had activity in the alloted time, we can delete it
-                        number = GetNumber(stc.Name);
-                        key = stc.Id;
-                        break;
-                    }
-                }
-                if (number != 1 && key != 0)
-                {
-                    await _client.Guilds.ElementAt(0).GetChannel(key).DeleteAsync();
-                    channels.Remove(key);
+                    ITextChannel overflowChannel = s.Guild.TextChannels.FirstOrDefault(x => GetName(x.Name).Equals(GetName(s.Name)) && ((OverwritePermissions)x.GetPermissionOverwrite(role)).ReadMessages == PermValue.Deny);
+                    OverwritePermissions perms = ((OverwritePermissions)overflowChannel.GetPermissionOverwrite(role));
+                    perms = perms.Modify(null, null, null, PermValue.Allow, PermValue.Allow, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                    await overflowChannel.RemovePermissionOverwriteAsync(role);
+                    await overflowChannel.AddPermissionOverwriteAsync(role, perms);
+
+                    await overflowChannel.SendMessageAsync("This channel was created due to strain on channel " + s.Name + ". Please continue your conversation here instead."); //TODO  pull these out into localizations
+                    await s.SendMessageAsync("Due to strain on this channel, we have created a new overflow channel: " + overflowChannel.Name + ". Please spread the conversations over multiple channels");
                 }
             });
-
             return Task.CompletedTask;
         }
 
-        private String GetChannel(String channelName)
-        { 
+        private Task RemoveChannel(SocketTextChannel s)
+        {
+            var _ = Task.Run(async () =>
+            {
+                var role = s.Guild.Roles.FirstOrDefault(x => x.Name == "Peon");
+                var messages = await s.GetMessagesAsync(maxNumberOfMessages).Flatten();
+                var latestMessage = messages.First().CreatedAt.LocalDateTime;
+                
+                var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, Delay * removalFactor, 0)).LocalDateTime;
+                if (latestMessage < tenMinAgo && GetNumber(s.Name) != 1)
+                {
+                    var deleting = Task.Run(async () => {
+                        await s.SendMessageAsync("Due to inactivity on this overflow channel, this channel will be removed in 1 minute. Please move to another channel");
+                        OverwritePermissions perms = new OverwritePermissions();
+                        perms = perms.Modify(null, null, null, PermValue.Deny, PermValue.Deny, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                        await s.AddPermissionOverwriteAsync(role, perms);
+                        Console.WriteLine("2");
+                    });
+                }
+            });
+           return Task.CompletedTask;
+        }
+
+        private String GetName(String channelName)
+        {
             char end = channelName.ElementAt(channelName.Count() - 1);
             return Char.IsNumber(end) ? channelName.Substring(0, channelName.Count() - 1) : channelName;
         }
@@ -124,14 +126,14 @@ namespace NadekoBot.Core.Services
             return Char.IsNumber(end) ? Int32.Parse(channelName.Substring(channelName.Count() - 1)) : 1;
         }
 
-        private int getNextNumber(String channelName)
+        private int getNextNumber(SocketTextChannel s)
         {
-            var guild = _guilds.ElementAt(0);
+            var guild = s.Guild;
             var channels = guild.TextChannels;
 
-            var name = GetChannel(channelName);
+            var name = GetName(s.Name);
 
-            List <int> numbers = new List<int>();
+            List<int> numbers = new List<int>();
             foreach (SocketTextChannel cl in channels)
             {
                 if (cl.Name.Equals(name))
@@ -157,4 +159,19 @@ namespace NadekoBot.Core.Services
             return nextNumber;
         }
     }
+
+    public class ChannelSettings
+    {
+        //        public int maxNumberOfMessages { get; set; }
+        //      public int AllotedTimeBeforeCountReset { get; set; }
+        //    public int AllotedTimeBeforeChannelRemoval { get; set; }
+
+        public static ChannelSettings Create(GuildConfig g) => new ChannelSettings()
+        {
+            //        maxNumberOfMessages = g.maxNumberOfMessages,
+            //       AllotedTimeBeforeCountReset = g.AllotedTimeBeforeCountReset,
+            //     AllotedTimeBeforeChannelRemoval = g.AllotedTimeBeforeChannelRemoval
+        };
+    }
+
 }
