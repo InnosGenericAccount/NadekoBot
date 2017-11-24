@@ -1,11 +1,9 @@
 ﻿using Discord;
-using Discord.Rest;
 using Discord.WebSocket;
 using NadekoBot.Core.Services.Database.Models;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,8 +20,7 @@ namespace NadekoBot.Core.Services
         const int maxNumberOfMessages = 10;
         const int Delay = 1; //in minutes
         const int removalFactor = 5; // Delat * removalFactor
-        const IRole role =null;
-  
+        const String rolename = "Peon";
 
         public ChannelService(DiscordSocketClient client, NadekoBot bot)
         {
@@ -39,7 +36,7 @@ namespace NadekoBot.Core.Services
             {
                 Start(new CancellationToken());
             }
-            
+
         }
 
 
@@ -51,8 +48,8 @@ namespace NadekoBot.Core.Services
                 {
                     foreach (SocketTextChannel channel in guild.TextChannels)
                     {
-                        await this.CreateChannel(channel);
-                        await this.RemoveChannel(channel);
+                        await this.OpenChannel(channel);
+                        await this.CloseChannel(channel);
                     }
                 }
                 try
@@ -66,17 +63,16 @@ namespace NadekoBot.Core.Services
             }
         }
 
-        private Task CreateChannel(SocketTextChannel s)
+        private Task OpenChannel(SocketTextChannel s)
         {
             var _ = Task.Run(async () =>
             {
-                var role = s.Guild.Roles.FirstOrDefault(x => x.Name == "Peon");
-                int nextNumber = getNextNumber(s);
+                var role = s.Guild.Roles.FirstOrDefault(x => x.Name.Equals(rolename));
                 var messages = await s.GetMessagesAsync(maxNumberOfMessages).Flatten();
                 var oldestMessage = messages.Last().CreatedAt;
 
                 var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, Delay, 0)).LocalDateTime;
-                if (oldestMessage > tenMinAgo && messages.Count()==maxNumberOfMessages)
+                if (oldestMessage > tenMinAgo && messages.Count() == maxNumberOfMessages)
                 {
                     ITextChannel overflowChannel = s.Guild.TextChannels.FirstOrDefault(x => GetName(x.Name).Equals(GetName(s.Name)) && ((OverwritePermissions)x.GetPermissionOverwrite(role)).ReadMessages == PermValue.Deny);
                     OverwritePermissions perms = ((OverwritePermissions)overflowChannel.GetPermissionOverwrite(role));
@@ -91,27 +87,27 @@ namespace NadekoBot.Core.Services
             return Task.CompletedTask;
         }
 
-        private Task RemoveChannel(SocketTextChannel s)
+        private Task CloseChannel(SocketTextChannel s)
         {
             var _ = Task.Run(async () =>
             {
-                var role = s.Guild.Roles.FirstOrDefault(x => x.Name == "Peon");
+                var role = s.Guild.Roles.FirstOrDefault(x => x.Name.Equals(rolename));
                 var messages = await s.GetMessagesAsync(maxNumberOfMessages).Flatten();
                 var latestMessage = messages.First().CreatedAt.LocalDateTime;
-                
+
                 var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, Delay * removalFactor, 0)).LocalDateTime;
                 if (latestMessage < tenMinAgo && GetNumber(s.Name) != 1)
                 {
-                    var deleting = Task.Run(async () => {
+                    var deleting = Task.Run(async () =>
+                    {
                         await s.SendMessageAsync("Due to inactivity on this overflow channel, this channel will be removed in 1 minute. Please move to another channel");
                         OverwritePermissions perms = new OverwritePermissions();
                         perms = perms.Modify(null, null, null, PermValue.Deny, PermValue.Deny, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
                         await s.AddPermissionOverwriteAsync(role, perms);
-                        Console.WriteLine("2");
                     });
                 }
             });
-           return Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
         private String GetName(String channelName)
@@ -126,52 +122,21 @@ namespace NadekoBot.Core.Services
             return Char.IsNumber(end) ? Int32.Parse(channelName.Substring(channelName.Count() - 1)) : 1;
         }
 
-        private int getNextNumber(SocketTextChannel s)
+
+
+        public class ChannelSettings
         {
-            var guild = s.Guild;
-            var channels = guild.TextChannels;
+            //        public int maxNumberOfMessages { get; set; }
+            //      public int AllotedTimeBeforeCountReset { get; set; }
+            //    public int AllotedTimeBeforeChannelRemoval { get; set; }
 
-            var name = GetName(s.Name);
-
-            List<int> numbers = new List<int>();
-            foreach (SocketTextChannel cl in channels)
+            public static ChannelSettings Create(GuildConfig g) => new ChannelSettings()
             {
-                if (cl.Name.Equals(name))
-                {
-                    numbers.Add(1);
-                }
-                else if (cl.Name.StartsWith(name))
-                {
-                    numbers.Add(GetNumber(cl.Name));
-                }
-            }
-            numbers.Sort();
-
-            int nextNumber = 1;
-            for (int i = 0; i < numbers.Count; i++)
-            {
-                if (numbers[i] > nextNumber)
-                {
-                    return nextNumber;
-                }
-                nextNumber++;
-            }
-            return nextNumber;
+                //        maxNumberOfMessages = g.maxNumberOfMessages,
+                //       AllotedTimeBeforeCountReset = g.AllotedTimeBeforeCountReset,
+                //     AllotedTimeBeforeChannelRemoval = g.AllotedTimeBeforeChannelRemoval
+            };
         }
+
     }
-
-    public class ChannelSettings
-    {
-        //        public int maxNumberOfMessages { get; set; }
-        //      public int AllotedTimeBeforeCountReset { get; set; }
-        //    public int AllotedTimeBeforeChannelRemoval { get; set; }
-
-        public static ChannelSettings Create(GuildConfig g) => new ChannelSettings()
-        {
-            //        maxNumberOfMessages = g.maxNumberOfMessages,
-            //       AllotedTimeBeforeCountReset = g.AllotedTimeBeforeCountReset,
-            //     AllotedTimeBeforeChannelRemoval = g.AllotedTimeBeforeChannelRemoval
-        };
-    }
-
 }
