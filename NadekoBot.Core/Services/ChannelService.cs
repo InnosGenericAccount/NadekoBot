@@ -77,11 +77,10 @@ namespace NadekoBot.Core.Services
                     ITextChannel overflowChannel = s.Guild.TextChannels.FirstOrDefault(x => GetName(x.Name).Equals(GetName(s.Name)) && ((OverwritePermissions)x.GetPermissionOverwrite(role)).ReadMessages == PermValue.Deny);
                     OverwritePermissions perms = ((OverwritePermissions)overflowChannel.GetPermissionOverwrite(role));
                     perms = perms.Modify(null, null, null, PermValue.Allow, PermValue.Allow, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
-                    await overflowChannel.RemovePermissionOverwriteAsync(role);
                     await overflowChannel.AddPermissionOverwriteAsync(role, perms);
 
-                    await overflowChannel.SendMessageAsync("This channel was created due to strain on channel " + s.Name + ". Please continue your conversation here instead."); //TODO  pull these out into localizations
-                    await s.SendMessageAsync("Due to strain on this channel, we have created a new overflow channel: " + overflowChannel.Name + ". Please spread the conversations over multiple channels");
+                    await overflowChannel.SendMessageAsync("This overflow channel was opened due to strain on channel " + s.Name + ". Please continue your conversation here instead."); //TODO  pull these out into localizations
+                    await s.SendMessageAsync("Due to strain on this channel, we have opened a new overflow channel: " + overflowChannel.Name + ". Please spread the conversations over the multiple channels");
                 }
             });
             return Task.CompletedTask;
@@ -96,12 +95,15 @@ namespace NadekoBot.Core.Services
                 var latestMessage = messages.First().CreatedAt.LocalDateTime;
 
                 var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, Delay * removalFactor, 0)).LocalDateTime;
-                if (latestMessage < tenMinAgo && GetNumber(s.Name) != 1)
+                OverwritePermissions perms = ((OverwritePermissions)s.GetPermissionOverwrite(role));
+                if (latestMessage < tenMinAgo && GetNumber(s.Name) != 1 && perms.ReadMessages.Equals(PermValue.Allow))
                 {
-                    var deleting = Task.Run(async () =>
+                    await s.SendMessageAsync("Due to inactivity, this channel will close for now. Please move to another channel");
+                    perms = perms.Modify(null, null, null, null, PermValue.Deny, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                    await s.AddPermissionOverwriteAsync(role, perms);
+                    Task.Run(async () =>
                     {
-                        await s.SendMessageAsync("Due to inactivity on this overflow channel, this channel will be removed in 1 minute. Please move to another channel");
-                        OverwritePermissions perms = new OverwritePermissions();
+                        await Task.Delay(TimeSpan.FromMinutes(1));
                         perms = perms.Modify(null, null, null, PermValue.Deny, PermValue.Deny, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
                         await s.AddPermissionOverwriteAsync(role, perms);
                     });
