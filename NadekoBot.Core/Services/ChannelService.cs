@@ -14,6 +14,10 @@ namespace NadekoBot.Core.Services
         private Dictionary<ulong, ChannelStats> channels = new Dictionary<ulong, ChannelStats>();
         private IReadOnlyCollection<SocketGuild> _guilds;
 
+        const int maxNumberOfMessages = 10;
+        const int AllotedTimeBeforeCountReset = 10; //in minutes
+        const int AllotedTimeBeforeChannelRemoval = 10; //in minutes
+
         class ChannelStats
         {
             private DateTimeOffset time = new DateTimeOffset();
@@ -54,8 +58,20 @@ namespace NadekoBot.Core.Services
             channel.Time = message.CreatedAt;
             int nextNumber = getNextNumber(message.Channel.Name);
 
-            if (channel.Count > 10)
+
+            var tenMinAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, AllotedTimeBeforeCountReset, 0)).LocalDateTime;
+            if (channel.Count <= maxNumberOfMessages &&channel.Time < tenMinAgo)
             {
+                //Reset count
+                channel.Count = 0;
+                channel.Time = DateTimeOffset.Now;
+            }
+            
+
+
+            if (channel.Count > maxNumberOfMessages)
+            {
+                //To many messages within the alloted time
                 var _ = Task.Run(async () =>
                 {
                     RestTextChannel newc = await _client.Guilds.ElementAt(0).CreateTextChannelAsync(name + nextNumber).ConfigureAwait(false);
@@ -77,9 +93,10 @@ namespace NadekoBot.Core.Services
                 ulong key = 0;
                 foreach (SocketTextChannel stc in _guilds.ElementAt(0).TextChannels)
                 {
-                    var anHourAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, 5, 0)).LocalDateTime;
+                    var anHourAgo = DateTimeOffset.Now.Subtract(new TimeSpan(0, AllotedTimeBeforeChannelRemoval, 0)).LocalDateTime;
                     if (channels.GetValueOrDefault(stc.Id).Count == 0 && channels.GetValueOrDefault(stc.Id).Time < anHourAgo)
                     {
+                        //Channel hasn't had activity in the alloted time, we can delete it
                         number = GetNumber(stc.Name);
                         key = stc.Id;
                         break;
